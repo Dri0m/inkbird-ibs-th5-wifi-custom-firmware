@@ -1,0 +1,24 @@
+{
+  "domain": "th5_display",
+  "name": "TH5 Display",
+  "after_dependencies": [
+    "camera",
+    "esphome",
+    "http",
+    "image",
+    "media_source",
+    "recorder",
+    "weather"
+  ],
+  "codeowners": [
+    "@Dri0m"
+  ],
+  "config_flow": true,
+  "dependencies": [],
+  "documentation": "https://github.com/Dri0m/inkbird-ibs-th5-wifi-custom-firmware",
+  "integration_type": "device",
+  "iot_class": "local_push",
+  "issue_tracker": "https://github.com/Dri0m/inkbird-ibs-th5-wifi-custom-firmware/issues",
+  "requirements": [],
+  "version": "0.2.7"
+}

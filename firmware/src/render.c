@@ -1,0 +1,398 @@
+/* Row-streaming renderer.  Pure integer C11, no malloc.
+ *
+ * Method: the screen_t is turned once into a short list of text items
+ * (font, pen x, byte-aligned y, string).  Two lists are cached (about 470 B
+ * of RAM each), so a band update that renders the old and the new screen row
+ * by row pays for each layout once.  A row call is then: fill white, for each
+ * item whose x-span contains x find the glyph (walk <= 6 advances) and blend
+ * its column (two planes of hb <= 5 bytes) into out[].
+ * Output is two planes, hi and lo: pixel = hi:lo, 11 white, 10 light grey,
+ * 01 dark grey, 00 black (the panel's DTM1:DTM2 grey code).  Text is
+ * anti-aliased in these four levels; overlapping ink keeps the darker code.
+ * The hi plane alone is the 1 bpp image (dark grey and black are ink).
+ * Glyph columns are stored in landscape-y order (see fonts_gen.h), so there is
+ * no per-pixel work (the band's big row adds one shift).
+ *
+ * Layout (landscape 416 x 240, all y positions are multiples of 8):
+ *   band  y 0..55 : clock HH:MM (32 px digits), "Sat 31 Oct" (small), T, RH
+ *                   (32 px digits, clock font), small labels, Wi-Fi and
+ *                   battery icons
+ *   fallback adds : 2 px rule y 57..58, then a status message centred in the
+ *                   body: a title (24 px cell, y 128) and a small hint line
+ *                   (y 160), e.g. "Home Assistant did not answer".
+ */
+#include "render.h"
+
+#include <stdbool.h>
+#include <stdint.h>
+
+#include "fonts_gen.h"
+
+#define W 416
+#define MAXITEM 16
+
+typedef struct {
+  const font_t *f;
+  int16_t x0, x1; /* pen start, end (exclusive)           */
+  uint8_t yb;     /* first output byte                    */
+  uint8_t sh;     /* extra downward shift, 0..7 px         */
+  char s[12];
+  const char *str; /* a constant string instead of s (status messages) */
+} item_t;
+
+typedef struct {
+  screen_t key;
+  uint8_t mode; /* 0 invalid, 1 band, 2 fallback */
+  uint8_t n, nband;
+  item_t it[MAXITEM];
+} layout_t;
+
+static layout_t cache[2];
+static layout_t *L = &cache[0]; /* the layout being built or drawn */
+
+
+/* tiny local helpers: the firmware is freestanding, no libc */
+static void bcopy(void *d, const void *s, unsigned n) {
+  uint8_t *dd = d; const uint8_t *ss = s;
+  while (n--) *dd++ = *ss++;
+}
+static void bfill(uint8_t *d, uint8_t v, unsigned n) { while (n--) *d++ = v; }
+static unsigned slen(const char *s) { unsigned n = 0; while (s[n]) n++; return n; }
+static void scpy(char *d, const char *s) { while ((*d++ = *s++)) {} }
+static void scat(char *d, const char *s) { scpy(d + slen(d), s); }
+
+static int16_t text_w(const font_t *f, const char *s) {
+  int16_t w = 0;
+  for (; *s; s++) {
+    uint8_t c = (uint8_t)*s;
+    if (c < f->first || c > f->last) continue;
+    uint8_t i = f->map[c - f->first];
+    if (i != 0xFF) w += f->g[i].adv;
+  }
+  return w;
+}
+
+/* x0 >= 0: left edge; x0 < 0: right edge is -x0 (right aligned) */
+static void add(const font_t *f, int16_t x0, uint8_t yb, const char *s) {
+  if (L->n >= MAXITEM) return;
+  item_t *t = &L->it[L->n++];
+  unsigned n = slen(s);
+  if (n > sizeof t->s - 1) n = sizeof t->s - 1;
+  bcopy(t->s, s, n);
+  t->s[n] = 0;
+  int16_t w = text_w(f, t->s);
+  if (x0 < 0) x0 = (int16_t)(-x0 - w);
+  t->f = f;
+  t->x0 = x0;
+  t->x1 = (int16_t)(x0 + w);
+  t->yb = yb;
+  t->sh = 0;
+  t->str = 0;
+}
+
+/* A constant string centred across the screen. */
+static void add_centred(const font_t *f, uint8_t yb, const char *s) {
+  if (L->n >= MAXITEM || !*s) return;
+  item_t *t = &L->it[L->n++];
+  int16_t w = text_w(f, s);
+  t->f = f;
+  t->x0 = (int16_t)((W - w) / 2);
+  t->x1 = (int16_t)(t->x0 + w);
+  t->yb = yb;
+  t->sh = 0;
+  t->s[0] = 0;
+  t->str = s;
+}
+
+/* The bezel hides the panel's top ~3 px (photo 2026-11-01), so the band's
+ * 32 px row is drawn 4 px lower: ink y 4..39, just above the small row. */
+#define BAND_DY 4u
+static void add_clk(int16_t x0, const char *s) {
+  uint8_t n = L->n;
+  add(&font_clk, x0, 0, s);
+  if (L->n > n) L->it[n].sh = BAND_DY;
+}
+
+/* exact for u < 81920; avoids libgcc's __aeabi_uidiv on the M0+ */
+static inline uint32_t div10(uint32_t u) { return (u * 52429u) >> 19; }
+static inline uint32_t mod10(uint32_t u) { return u - 10u * div10(u); }
+
+static char *put2(char *p, unsigned v) {
+  *p++ = (char)('0' + mod10(div10(v)));
+  *p++ = (char)('0' + mod10(v));
+  return p;
+}
+
+/* value in tenths -> "[-]W.F" (W up to 3 digits) */
+static char *put_t10(char *p, int32_t v) {
+  if (v < 0) {
+    *p++ = '-';
+    v = -v;
+  }
+  if (v > 9999) v = 9999;
+  uint32_t w = div10((uint32_t)v), f = mod10((uint32_t)v);
+  if (w >= 100) *p++ = (char)('0' + div10(div10(w)));
+  if (w >= 10) *p++ = (char)('0' + mod10(div10(w)));
+  *p++ = (char)('0' + mod10(w));
+  *p++ = '.';
+  *p++ = (char)('0' + f);
+  return p;
+}
+
+/* ---- status icons: 24 px tall columns, bit 23 = top row, 1 = black ---- */
+
+enum { ICON_WIFI = 1, ICON_BAT = 2 };
+#define WIFI_W 25
+#define BAT_W  30
+
+/* generated by tools/mkicons.py; LINK_* order: wait, ok, err; rows -2..;
+   [..][0] hi word (dark grey or black), [..][1] lo word (light grey or black) */
+static const uint32_t wifi_cols[3][2][WIFI_W] = {
+    {{0x000000, 0x030000, 0x0F0000, 0x0B0000, 0x120000, 0x342000, 0x2C7000, 0x28F000, 0x68B000, 0x59A000, 0x514700, 0x514F80, 0x514F80, 0x514F80, 0x514700, 0x59A000, 0x68B000, 0x28F000, 0x2C7000, 0x342000, 0x120000, 0x0B0000, 0x0F0000, 0x030000, 0x000000},
+     {0x000000, 0x060000, 0x070000, 0x1F0000, 0x1E0000, 0x161000, 0x307800, 0x481800, 0x118000, 0x606000, 0x592E00, 0xD34F00, 0xD34F80, 0xD34F00, 0x592E00, 0x606000, 0x118000, 0x481800, 0x307800, 0x161000, 0x1E0000, 0x1F0000, 0x070000, 0x060000, 0x000000}},
+    {{0x000000, 0x030000, 0x0F0000, 0x0F0000, 0x1E0000, 0x3C2000, 0x3C7000, 0x38F000, 0x78F000, 0x71E000, 0x71C700, 0x71CF80, 0x71CF80, 0x71CF80, 0x71C700, 0x71E000, 0x78F000, 0x38F000, 0x3C7000, 0x3C2000, 0x1E0000, 0x0F0000, 0x0F0000, 0x030000, 0x000000},
+     {0x000000, 0x060000, 0x070000, 0x1F0000, 0x1E0000, 0x1E1000, 0x387800, 0x787800, 0x31E000, 0x78C000, 0x79EE00, 0x71CF00, 0x73CF80, 0x71CF00, 0x79EE00, 0x78C000, 0x31E000, 0x787800, 0x387800, 0x1E1000, 0x1E0000, 0x1F0000, 0x070000, 0x060000, 0x000000}},
+    {{0x000000, 0x030000, 0x0F00C0, 0x0F01C0, 0x1E0380, 0x3C2700, 0x3C6F00, 0x38DE00, 0x789C00, 0x703800, 0x707300, 0x70E780, 0x71CF80, 0x738F80, 0x670700, 0x4E6000, 0x1EF000, 0x1CF000, 0x387000, 0x702000, 0xE60000, 0x1CF0000, 0x38F0000, 0x1030000, 0x000000},
+     {0x000000, 0x060000, 0x0700C0, 0x1F00C0, 0x1E01C0, 0x1E0380, 0x384600, 0x780C00, 0x313800, 0x797000, 0x78F200, 0x70E700, 0x71E780, 0x71CF00, 0x738E00, 0x670000, 0x0C6000, 0x387800, 0x707800, 0xE61000, 0x1E60000, 0x1CF0000, 0x1C70000, 0x2860000, 0x000000}},
+};
+static const uint32_t bat_outline[2][BAT_W] = {{0x3FFC00, 0x7FFE00, 0x700E00, 0x600600, 0x600600, 0x600600, 0x600600, 0x600600, 0x600600, 0x600600, 0x600600, 0x600600, 0x600600, 0x600600, 0x600600, 0x600600, 0x600600, 0x600600, 0x600600, 0x600600, 0x600600, 0x600600, 0x600600, 0x700E00, 0x7FFE00, 0x3FF800, 0x000000, 0x07E000, 0x07E000, 0x07E000},
+    {0x1FF800, 0x3FFC00, 0x600600, 0x600600, 0x600600, 0x600600, 0x600600, 0x600600, 0x600600, 0x600600, 0x600600, 0x600600, 0x600600, 0x600600, 0x600600, 0x600600, 0x600600, 0x600600, 0x600600, 0x600600, 0x600600, 0x600600, 0x600600, 0x600600, 0x3FFC00, 0x1FFC00, 0x000000, 0x03C000, 0x07E000, 0x03C000}};
+static const uint32_t bolt_cols[8] = {0x009000, 0x00B000, 0x01E000, 0x01C000, 0x038000, 0x078000, 0x0D0000, 0x090000};
+
+/* Battery: the outline above plus a gauge, cols 4..21 x cell rows 5..10,
+ * filled in proportion to the charge; the bolt is XORed over it while
+ * charging, so it shows white on the fill and black on the empty part.
+ * The gauge and the bolt are black, so they set the same bits in both
+ * words; `plane` picks the outline's hi (0) or lo (1) word. */
+#define BAT_FILL 0x07E000u
+
+static uint32_t bat_col(uint8_t pct, bool charging, int16_t x, unsigned plane) {
+  uint32_t w = bat_outline[plane][x];
+  if (x >= 4 && x <= 21) {
+    if (pct == RENDER_BATT_UNKNOWN) {
+      if (!(x & 1)) w |= BAT_FILL; /* dotted: no reading on battery yet */
+    } else {
+      unsigned n = div10(div10((pct > 100 ? 100u : pct) * 18u + 99u)); /* 1..18 cols */
+      if ((unsigned)(x - 4) < n) w |= BAT_FILL;
+    }
+  }
+  if (charging && x >= 9 && x <= 16) w ^= bolt_cols[x - 9];
+  return w;
+}
+
+static void add_icon(uint8_t kind, int16_t x0, int16_t w, uint8_t yb, uint8_t a, uint8_t b) {
+  if (L->n >= MAXITEM) return;
+  item_t *t = &L->it[L->n++];
+  t->f = 0;
+  t->x0 = x0;
+  t->x1 = (int16_t)(x0 + w);
+  t->yb = yb;
+  t->sh = 0;
+  t->str = 0;
+  t->s[0] = (char)kind;
+  t->s[1] = (char)a;
+  t->s[2] = (char)b;
+}
+
+/* Battery and Wi-Fi state. Band: stacked in the free column right of the
+ * RH text (which ends at x <= 371 for "99.9%"): battery ink y 9..22, Wi-Fi
+ * ink y 31..46. Fallback: side by side, right-aligned at x 409. */
+static void add_icons(const screen_t *s, uint8_t yb, bool stacked) {
+  uint8_t link = s->link > LINK_ERR ? LINK_ERR : s->link;
+  if (stacked) {
+    add_icon(ICON_BAT, 379, BAT_W, yb, s->battery_pct, s->charging);
+    add_icon(ICON_WIFI, 381, WIFI_W, (uint8_t)(yb + 3), link, 0); /* centred under the battery incl. nub */
+  } else {
+    add_icon(ICON_WIFI, 409 - BAT_W - 8 - WIFI_W, WIFI_W, yb, link, 0);
+    add_icon(ICON_BAT, 409 - BAT_W, BAT_W, yb, s->battery_pct, s->charging);
+  }
+}
+
+uint8_t render_hour(uint8_t hour, bool h12) {
+  if (!h12) return hour;
+  if (hour >= 12u) hour = (uint8_t)(hour - 12u);
+  return hour ? hour : 12u;
+}
+
+static const char wd_name[] = "SunMonTueWedThuFriSat";
+static const char mo_name[] = "JanFebMarAprMayJunJulAugSepOctNovDec";
+
+static void build(const screen_t *s, uint8_t mode) {
+  char b[16], *p;
+  bcopy(&L->key, s, sizeof *s);
+  L->mode = mode;
+  L->n = 0;
+
+  /* ---- temperature text (shared) ---- */
+  char tt[10];
+  if (!s->sensor_ok) {
+    scpy(tt, "--.-");
+  } else {
+    int32_t v = s->t10;
+    if (s->fahrenheit) { /* round(v*9/5) + 320, symmetric rounding */
+      uint32_t a = (uint32_t)(v < 0 ? -v : v) * 9u + 2u;
+      int32_t f = (int32_t)((a * 52429u) >> 18);
+      v = (v < 0 ? -f : f) + 320;
+    }
+    p = put_t10(tt, v);
+    *p = 0;
+  }
+  char rt[8];
+  if (!s->sensor_ok) {
+    scpy(rt, "--.-");
+  } else {
+    uint32_t v = s->rh10 > 999 ? 999 : s->rh10;
+    p = put_t10(rt, (int32_t)v);
+    *p = 0;
+  }
+
+  /* ---- band ---- */
+  if (s->time_valid) {
+    p = put2(b, render_hour(s->hour, s->h12));
+    *p++ = ':';
+    p = put2(p, s->min);
+    *p = 0;
+  } else {
+    scpy(b, "--:--");
+  }
+  add_clk(8, b);
+
+  if (s->time_valid && s->month >= 1 && s->month <= 12) {
+    const char *w = wd_name + 3 * (s->wday % 7), *m = mo_name + 3 * (s->month - 1);
+    p = b;
+    bcopy(p, w, 3);
+    p += 3;
+    *p++ = ' ';
+    if (s->day >= 10) *p++ = (char)('0' + mod10(div10(s->day)));
+    *p++ = (char)('0' + mod10(s->day));
+    *p++ = ' ';
+    bcopy(p, m, 3);
+    p += 3;
+    *p = 0;
+  } else {
+    scpy(b, "No time");
+  }
+  add(&font_small, 8, 5, b);
+
+  scat(tt, s->fahrenheit ? "*F" : "*C");
+  add_clk(128, tt);
+  add(&font_small, 128, 5, "Temp");
+
+  scat(rt, "%");
+  add_clk(262, rt);
+  add(&font_small, 262, 5, "Humidity");
+
+  add_icons(s, 1, true);
+  L->nband = L->n;
+  if (mode == 1) return;
+
+  /* ---- fallback body: what the device is waiting for, or what failed ---- */
+  static const char *const msg[RENDER_ST_COUNT][2] = {
+    [RENDER_ST_NONE]         = {"No picture yet", "It comes with the next sync"},
+    [RENDER_ST_NOT_SET_UP]   = {"Not connected yet", "Waiting for Home Assistant"},
+    [RENDER_ST_LINK_ERROR]   = {"Wi-Fi module not responding", "Press the top button to retry"},
+    [RENDER_ST_CHARGE]       = {"Battery low", "Please charge the device"},
+    [RENDER_ST_OFF]          = {"Switched off", "Slide the switch to turn it on"},
+    [RENDER_ST_WIFI]         = {"Cannot join Wi-Fi", "Press the top button to retry"},
+    [RENDER_ST_HA_UNREACH]   = {"Cannot reach Home Assistant", "Press the top button to retry"},
+    [RENDER_ST_HA_NO_ANSWER] = {"Home Assistant did not answer", "Check the TH5 Display integration"},
+  };
+  uint8_t st = s->status < RENDER_ST_COUNT ? s->status : RENDER_ST_NONE;
+  add_centred(&font_msg, 16, msg[st][0]);
+  add_centred(&font_small, 20, msg[st][1]);
+}
+
+/* Blend 8 pixels (hi:lo codes, larger = lighter) into out: keep the darker. */
+static inline void blend(uint8_t *hi, uint8_t *lo, uint8_t gh, uint8_t gl) {
+  uint8_t ah = *hi, al = *lo;
+  *hi = ah & gh;
+  *lo = (uint8_t)((al & gl) | (ah & ~gh & gl) | (~ah & gh & al));
+}
+
+static void draw(const item_t *t, uint16_t x, uint8_t *hi, uint8_t *lo) {
+  const font_t *f = t->f;
+  if (!f) { /* icon: 24-row column words, hi (dark or black) and lo (light or black) */
+    int16_t col = (int16_t)(x - t->x0);
+    uint32_t wh, wl;
+    if ((uint8_t)t->s[0] == ICON_WIFI) {
+      wh = wifi_cols[(uint8_t)t->s[1]][0][col];
+      wl = wifi_cols[(uint8_t)t->s[1]][1][col];
+    } else {
+      wh = bat_col((uint8_t)t->s[1], t->s[2], col, 0);
+      wl = bat_col((uint8_t)t->s[1], t->s[2], col, 1);
+    }
+    for (uint8_t k = 0; k < 3; k++)
+      blend(&hi[t->yb + k], &lo[t->yb + k], (uint8_t)~(wh >> (16 - 8 * k)),
+            (uint8_t)~(wl >> (16 - 8 * k)));
+    return;
+  }
+  int16_t pen = t->x0, xi = (int16_t)x;
+  for (const char *c = t->str ? t->str : t->s; *c; c++) {
+    uint8_t ch = (uint8_t)*c;
+    if (ch < f->first || ch > f->last) continue;
+    uint8_t gi = f->map[ch - f->first];
+    if (gi == 0xFF) continue;
+    const glyph_t *g = &f->g[gi];
+    if (xi < pen + g->adv) {
+      int16_t col = (int16_t)(xi - pen - g->lsb);
+      if (col >= 0 && col < g->w) {
+        const uint8_t *srch = f->bits + g->off + col * 2 * f->hb, *srcl = srch + f->hb;
+        uint8_t *dh = hi + t->yb, *dl = lo + t->yb, sh = t->sh, carh = 0xFF, carl = 0xFF;
+        /* shifting by sh spills into d[hb]; white (1) bits are shifted in */
+        for (uint8_t k = 0; k < f->hb; k++) {
+          blend(&dh[k], &dl[k], (uint8_t)((carh << (8 - sh)) | (srch[k] >> sh)),
+                (uint8_t)((carl << (8 - sh)) | (srcl[k] >> sh)));
+          carh = srch[k];
+          carl = srcl[k];
+        }
+        if (sh)
+          blend(&dh[f->hb], &dl[f->hb], (uint8_t)((carh << (8 - sh)) | (0xFFu >> sh)),
+                (uint8_t)((carl << (8 - sh)) | (0xFFu >> sh)));
+      }
+      return;
+    }
+    pen = (int16_t)(pen + g->adv);
+  }
+}
+
+static bool same(const screen_t *a, const screen_t *b) {
+  const uint8_t *p = (const uint8_t *)a, *q = (const uint8_t *)b;
+  for (unsigned i = 0; i < sizeof *a; i++)
+    if (p[i] != q[i]) return false;
+  return true;
+}
+
+/* Select the cached layout for (s, mode), building it over the other slot
+ * (the one not used last) if neither matches. */
+static void ensure(const screen_t *s, uint8_t mode) {
+  for (unsigned i = 0; i < 2; i++)
+    if (cache[i].mode == mode && same(&cache[i].key, s)) {
+      L = &cache[i];
+      return;
+    }
+  L = L == &cache[0] ? &cache[1] : &cache[0];
+  build(s, mode);
+}
+
+void render_band_row(const screen_t *s, uint16_t x, uint8_t hi[7], uint8_t lo[7]) {
+  bfill(hi, 0xFF, 7);
+  bfill(lo, 0xFF, 7);
+  if (x >= W) return;
+  ensure(s, 1);
+  for (uint8_t i = 0; i < L->nband; i++)
+    if ((int16_t)x >= L->it[i].x0 && (int16_t)x < L->it[i].x1) draw(&L->it[i], x, hi, lo);
+}
+
+void render_fallback_row(const screen_t *s, uint16_t x, uint8_t hi[30], uint8_t lo[30]) {
+  bfill(hi, 0xFF, 30);
+  bfill(lo, 0xFF, 30);
+  if (x >= W) return;
+  ensure(s, 2);
+  for (uint8_t i = 0; i < L->n; i++) {
+    const item_t *t = &L->it[i];
+    if ((int16_t)x < t->x0 || (int16_t)x >= t->x1) continue;
+    draw(t, x, hi, lo);
+  }
+  hi[7] &= 0x9F; /* 2 px black rule at y 57..58 */
+  lo[7] &= 0x9F;
+}

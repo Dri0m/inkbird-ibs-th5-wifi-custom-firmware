@@ -1,0 +1,176 @@
+# Inkbird IBS-TH5-WIFI, de-clouded: the Tuya CBU (BK7231N) runs ESPHome and talks
+# to our own HC32 firmware (firmware/src/link_proto.h). The MCU powers the CBU
+# only for a sync (a few seconds), so everything here is tuned for a fast cold
+# start. See the README at the top of the repo (build, first flash, restore).
+
+substitutions:
+  name: th5
+  # EDIT THESE FOUR. Static addressing (DHCP would cost time at every wake);
+  # th5_link learns the AP's BSSID/channel by itself. Pick a free address
+  # outside your router's DHCP pool.
+  static_ip: 192.168.1.230
+  gateway: 192.168.1.1
+  subnet: 255.255.255.0
+  # Home Assistant's address. outgoing_connection takes an IP only, so give
+  # HA a fixed address in the router.
+  ha_ip: 192.168.1.10
+
+esphome:
+  name: ${name}
+  friendly_name: Inkbird TH5
+
+bk72xx:
+  board: cbu
+  framework:
+    version: 1.13.0  # sdk_patch.py is qualified against this installed source
+    # The default 256 B LibreTiny serial RX ring is small; MCU -> CBU payloads
+    # are capped at 256 B anyway (protocol.md 3.3, [ha M7]).
+    options:
+      LT_SERIAL_BUFFER_SIZE: "4096"
+    # LibreTiny's own log output goes to UART2 (P0), never to the link UART.
+    uart_port: 2
+    sdk_silent: all
+
+# Nothing but frames on UART1 after boot (protocol.md 2.2 step 4). Logs stream
+# over the API only; nobody listens during a 2 s sync, so warnings only. Raise to
+# INFO/DEBUG for a bench session with `esphome logs`.
+logger:
+  baud_rate: 0
+  level: WARN
+
+uart:
+  id: link_uart
+  tx_pin: TX1     # P11, pad TXD -> HC32 PB07 (evidence/board-rev1.2.md)
+  rx_pin: RX1     # P10, pad RXD <- HC32 PB06
+  baud_rate: 115200
+  # Kept equal to LT_SERIAL_BUFFER_SIZE above for clarity only: ESPHome's
+  # LibreTiny UART logs rx_buffer_size but never applies it; the real RX ring
+  # size is LT_SERIAL_BUFFER_SIZE (protocol.md 3.3: 4096).
+  rx_buffer_size: 4096
+
+wifi:
+  networks:
+    - ssid: !secret wifi_ssid
+      # A passphrase or the precomputed 64-hex WPA2 PSK (see the README).
+      password: !secret wifi_password
+  manual_ip:
+    static_ip: ${static_ip}
+    gateway: ${gateway}
+    subnet: ${subnet}
+  fast_connect: true
+  power_save_mode: none
+  # A short sync can end before the next 1s polling tick. on_connect runs
+  # after the owning manager has refreshed its connected state.
+  on_connect:
+    then:
+      - component.update: wifi_channel
+      - component.update: wifi_signal_dbm
+      # wifi_info BSSID is event-driven Component, with no update() action.
+      - lambda: |-
+          auto bssid = esphome::wifi::global_wifi_component->wifi_bssid();
+          char ap[18];
+          esphome::format_mac_addr_upper(bssid.data(), ap);
+          id(wifi_ap).publish_state(ap);
+  # No ap:, no captive_portal: (design.md 9, [ha M8]).
+
+# Adoption is by IP; mDNS only costs boot time.
+mdns:
+  disabled: true
+
+api:
+  encryption:
+    key: !secret api_encryption_key
+  # The device dials HA as soon as Wi-Fi is up (ESPHome 2026.10+, HA 2026.10+).
+  # HA 2026.10+ accepts the dial-in by MAC once the device is adopted.
+  outgoing_connection:
+    host: ${ha_ip}
+  # th5_config / th5_frame / th5_done are registered by th5_link itself.
+  # "Allow the device to perform Home Assistant actions" stays OFF in HA.
+
+ota:
+  - platform: esphome
+    password: !secret ota_password
+
+# Kept: it is the OTA recovery path. th5_link marks every session successful,
+# otherwise ten 3-second boots would trip it ([ha B2]).
+safe_mode:
+  num_attempts: 10
+
+# Compiled in only for has_deep_sleep, so HA keeps the last values while the CBU
+# is unpowered. Never entered: on BK72xx deep_sleep.enter ends in
+# lt_deep_sleep_enter() and never returns, so th5_link runs its own shutdown
+# (API DisconnectRequest, Wi-Fi off) and then streams the frame to the MCU.
+# No run_duration: ESPHome must not sleep on its own schedule.
+deep_sleep:
+  id: deep_sleep_1
+
+external_components:
+  - source:
+      type: local
+      path: components
+    components: [th5_link]
+
+th5_link:
+  uart_id: link_uart
+  # 500 kbaud after HELLO_RSP (protocol.md 2.3). Off until verified on the bench:
+  # ESPHome's LibreTiny UART has no load_settings(); th5_link calls LibreTiny's
+  # SerialClass::configure(), which reprograms the baud divider only (no
+  # end()/begin(), the RX ring and its contents are kept).
+  fast_baud: false
+  ha_timeout: 3s
+  temperature:
+    name: Temperature
+  humidity:
+    name: Humidity
+  battery_level:
+    name: Battery
+  battery_voltage:
+    name: Battery voltage
+  last_session:
+    name: Last session duration
+  fail_count:
+    name: Failed sessions
+  session:
+    name: Session
+  units:
+    name: Display units
+  charge_state:
+    name: Charge state
+  reset_cause:
+    name: MCU reset cause
+  last_result:
+    name: Last session result
+  trigger:
+    name: Session trigger
+  mcu_version:
+    name: MCU firmware
+  wifi_join:
+    name: Wi-Fi join
+  history:
+    name: History
+
+# The AP and channel actually used this session.
+text_sensor:
+  - platform: wifi_info
+    bssid:
+      id: wifi_ap
+      name: Wi-Fi AP
+      entity_category: diagnostic
+
+sensor:
+  - platform: template
+    id: wifi_channel
+    name: Wi-Fi channel
+    entity_category: diagnostic
+    accuracy_decimals: 0
+    update_interval: 1s
+    lambda: |-
+      int32_t ch = WiFi.channel();
+      return ch > 0 ? optional<float>(ch) : optional<float>();
+  - platform: wifi_signal
+    id: wifi_signal_dbm
+    name: Wi-Fi signal
+    entity_category: diagnostic
+    update_interval: 1s
+    filters:
+      - filter_out: 0.0  # SDK transition sentinel, never a valid AP RSSI

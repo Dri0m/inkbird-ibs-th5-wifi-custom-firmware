@@ -1,0 +1,15 @@
+# Your Wi-Fi/API/OTA secrets
+esphome/secrets.yaml
+# Your stock flash backups (the Wi-Fi module's contains its Tuya keys and your Wi-Fi password)
+backup/
+# Vendor pack, if you keep it next to the repo
+HC32L17X.pack
+# Build output and caches
+build/
+esphome/.esphome/
+out/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+*.log
+.DS_Store
