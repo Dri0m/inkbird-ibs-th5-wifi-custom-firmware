@@ -1,0 +1,98 @@
+{
+  "entity": {
+    "binary_sensor": {
+      "display_up_to_date": {
+        "default": "mdi:monitor-shimmer",
+        "state": {
+          "on": "mdi:check-circle-outline",
+          "off": "mdi:timer-sand"
+        }
+      }
+    },
+    "button": {
+      "redraw_forecast": {
+        "default": "mdi:chart-bell-curve-cumulative"
+      }
+    },
+    "image": {
+      "preview": {
+        "default": "mdi:image-frame"
+      }
+    },
+    "number": {
+      "sync_interval": {
+        "default": "mdi:sync"
+      },
+      "clock_period": {
+        "default": "mdi:clock-outline"
+      },
+      "full_refresh": {
+        "default": "mdi:refresh"
+      },
+      "temperature_offset": {
+        "default": "mdi:thermometer-plus"
+      },
+      "humidity_offset": {
+        "default": "mdi:water-plus"
+      }
+    },
+    "select": {
+      "mode": {
+        "default": "mdi:monitor",
+        "state": {
+          "forecast": "mdi:weather-partly-cloudy",
+          "picture": "mdi:image"
+        }
+      },
+      "clock_text": {
+        "default": "mdi:format-color-text"
+      }
+    },
+    "sensor": {
+      "last_sync": {
+        "default": "mdi:cloud-sync-outline"
+      },
+      "next_sync": {
+        "default": "mdi:clock-start"
+      },
+      "sync_result": {
+        "default": "mdi:check-network-outline",
+        "state": {
+          "failed": "mdi:close-network-outline",
+          "firmware_sent": "mdi:chip"
+        }
+      },
+      "frame_id": {
+        "default": "mdi:identifier"
+      }
+    },
+    "switch": {
+      "clock_24h": {
+        "default": "mdi:hours-24"
+      },
+      "maintenance": {
+        "default": "mdi:wrench-clock",
+        "state": {
+          "on": "mdi:wrench"
+        }
+      },
+      "top_bar": {
+        "default": "mdi:page-layout-header"
+      },
+      "single_reset": {
+        "default": "mdi:flask-outline"
+      }
+    }
+  },
+  "services": {
+    "show_image": {
+      "service": "mdi:image-move"
+    },
+    "refresh": {
+      "service": "mdi:refresh"
+    },
+    "install_firmware": {
+      "service": "mdi:memory"
+    }
+  }
+}

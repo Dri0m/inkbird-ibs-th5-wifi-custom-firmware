@@ -1,0 +1,66 @@
+# Picture area: 416x240 px (26:15) full screen, 416x181 px (~2.30:1) under the
+# top bar (switch "Picture top bar"). The text is in translations/en.json.
+show_image:
+  fields:
+    device_id:
+      selector:
+        device:
+          entity:
+            - integration: th5_display
+    config_entry_id:
+      advanced: true
+      selector:
+        config_entry:
+          integration: th5_display
+    media:
+      required: true
+      selector:
+        media:
+          accept:
+            - image/*
+    fit:
+      default: contain
+      selector:
+        select:
+          translation_key: fit
+          options:
+            - contain
+            - cover
+    dither:
+      default: floyd_steinberg
+      selector:
+        select:
+          translation_key: dither
+          options:
+            - floyd_steinberg
+            - atkinson
+            - none
+refresh:
+  fields:
+    device_id:
+      selector:
+        device:
+          entity:
+            - integration: th5_display
+    config_entry_id:
+      advanced: true
+      selector:
+        config_entry:
+          integration: th5_display
+install_firmware:
+  fields:
+    device_id:
+      selector:
+        device:
+          entity:
+            - integration: th5_display
+    config_entry_id:
+      advanced: true
+      selector:
+        config_entry:
+          integration: th5_display
+    path:
+      required: true
+      example: th5-test.fwu
+      selector:
+        text:

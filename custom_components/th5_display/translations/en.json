@@ -1,0 +1,277 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "TH5 Display",
+        "description": "Pick the Inkbird TH5 running the th5_link ESPHome firmware, the weather entity for the forecast, and the place name shown on the panel.",
+        "data": {
+          "device_id": "Device",
+          "weather_entity": "Weather source",
+          "location": "Place name on the panel"
+        },
+        "data_description": {
+          "device_id": "An ESPHome device with th5_link. It must have connected to Home Assistant at least once.",
+          "weather_entity": "Any weather entity with an hourly forecast, such as Met.no or Open-Meteo.",
+          "location": "Shown above the forecast chart."
+        }
+      },
+      "reconfigure": {
+        "title": "TH5 Display",
+        "description": "Change the weather source or the place name. The new forecast is sent at the next sync.",
+        "data": {
+          "weather_entity": "Weather source",
+          "location": "Place name on the panel"
+        },
+        "data_description": {
+          "weather_entity": "Any weather entity with an hourly forecast, such as Met.no or Open-Meteo.",
+          "location": "Shown above the forecast chart."
+        }
+      }
+    },
+    "error": {
+      "device_not_found": "The device no longer exists.",
+      "not_esphome": "This is not an ESPHome device.",
+      "no_th5_link": "This ESPHome device has no th5_config, th5_frame and th5_done actions. Is it running the th5_link firmware, and has it connected to Home Assistant since it was flashed?",
+      "no_session_sensor": "The device has no Session sensor. Is it running the th5_link firmware?",
+      "weather_not_found": "The weather entity does not exist.",
+      "no_hourly_forecast": "This weather entity has no hourly forecast."
+    },
+    "abort": {
+      "already_configured": "This device is already set up.",
+      "reconfigure_successful": "The settings were changed."
+    }
+  },
+  "entity": {
+    "binary_sensor": {
+      "display_up_to_date": {
+        "name": "Display up to date"
+      }
+    },
+    "button": {
+      "redraw_forecast": {
+        "name": "Redraw forecast"
+      }
+    },
+    "image": {
+      "preview": {
+        "name": "Display preview"
+      }
+    },
+    "number": {
+      "sync_interval": {
+        "name": "Sync interval"
+      },
+      "clock_period": {
+        "name": "Clock update"
+      },
+      "full_refresh": {
+        "name": "Full refresh every"
+      },
+      "temperature_offset": {
+        "name": "Temperature offset"
+      },
+      "humidity_offset": {
+        "name": "Humidity offset"
+      }
+    },
+    "select": {
+      "mode": {
+        "name": "Display mode",
+        "state": {
+          "forecast": "Forecast",
+          "picture": "Picture"
+        }
+      },
+      "clock_text": {
+        "name": "Clock text",
+        "state": {
+          "greyscale": "Greyscale",
+          "monochrome": "Monochrome"
+        }
+      }
+    },
+    "sensor": {
+      "last_sync": {
+        "name": "Last sync"
+      },
+      "next_sync": {
+        "name": "Next sync"
+      },
+      "sync_result": {
+        "name": "Sync result",
+        "state": {
+          "ok": "OK",
+          "frame_sent": "OK, frame sent",
+          "failed": "Failed",
+          "firmware_sent": "OK, firmware sent"
+        },
+        "state_attributes": {
+          "error": {
+            "name": "Error"
+          },
+          "duration": {
+            "name": "Duration"
+          },
+          "device_frame_id": {
+            "name": "Device frame id"
+          },
+          "forecast_problem": {
+            "name": "Forecast problem"
+          }
+        }
+      },
+      "frame_id": {
+        "name": "Frame id"
+      }
+    },
+    "switch": {
+      "clock_24h": {
+        "name": "24-hour clock"
+      },
+      "maintenance": {
+        "name": "Maintenance",
+        "state_attributes": {
+          "held_until": {
+            "name": "Held until"
+          }
+        }
+      },
+      "top_bar": {
+        "name": "Picture top bar"
+      },
+      "single_reset": {
+        "name": "Single reset greyscale band"
+      }
+    },
+    "update": {
+      "mcu_firmware": {
+        "name": "MCU firmware"
+      }
+    }
+  },
+  "exceptions": {
+    "device_gone": {
+      "message": "The ESPHome device of this TH5 Display entry was removed."
+    },
+    "link_not_ready": {
+      "message": "The ESPHome device is not ready ({reason})."
+    },
+    "no_picture": {
+      "message": "There is no picture yet. Use the th5_display.show_image action first."
+    },
+    "forecast_failed": {
+      "message": "The forecast could not be updated: {error}"
+    },
+    "bad_image": {
+      "message": "The image could not be read: {error}"
+    },
+    "media_failed": {
+      "message": "The image could not be fetched: {error}"
+    },
+    "path_not_allowed": {
+      "message": "{path} is not in an allowed directory (a media folder or allowlist_external_dirs)."
+    },
+    "no_target": {
+      "message": "Several TH5 displays are set up: choose a device."
+    },
+    "no_display": {
+      "message": "No loaded TH5 Display entry matches the chosen device."
+    },
+    "firmware_invalid": {
+      "message": "The firmware package is not usable: {error}"
+    },
+    "no_bootloader": {
+      "message": "The device has no bootloader (boot_ver 0). Install the bootloader over SWD once; after that, updates go over the link."
+    },
+    "bootloader_too_old": {
+      "message": "The package needs bootloader version {need}; the device has {have}."
+    },
+    "no_firmware_action": {
+      "message": "The ESPHome device has no th5_firmware action. Flash a th5_link build that supports MCU updates."
+    },
+    "no_firmware_bundled": {
+      "message": "No valid firmware package is bundled with the integration."
+    },
+    "firmware_path_outside": {
+      "message": "{path} is outside the Home Assistant configuration directory."
+    },
+    "firmware_unreadable": {
+      "message": "The firmware file could not be read: {error}"
+    }
+  },
+  "selector": {
+    "fit": {
+      "options": {
+        "contain": "Contain (whole picture, white bars)",
+        "cover": "Cover (fill the picture area, crop the edges)"
+      }
+    },
+    "dither": {
+      "options": {
+        "floyd_steinberg": "Floyd–Steinberg",
+        "atkinson": "Atkinson (more contrast)",
+        "none": "None (nearest grey)"
+      }
+    }
+  },
+  "services": {
+    "show_image": {
+      "name": "Show image",
+      "description": "Converts an image to the panel's four greys and switches the display to picture mode. It is sent at the device's next sync. The picture area is 416×240 px (26:15) full screen, or 416×181 px (≈ 2.30:1) under the top bar (switch Picture top bar); crop to that aspect ratio to fill it without borders or cropping.",
+      "fields": {
+        "device_id": {
+          "name": "Device",
+          "description": "The TH5. Optional when only one is set up."
+        },
+        "config_entry_id": {
+          "name": "Config entry",
+          "description": "The TH5 Display entry, instead of the device."
+        },
+        "media": {
+          "name": "Image",
+          "description": "A camera or image entity (one snapshot), a file in My media, or another image media source."
+        },
+        "fit": {
+          "name": "Fit",
+          "description": "How the image fills the picture area: 416×240 full screen, or 416×181 under the top bar."
+        },
+        "dither": {
+          "name": "Dither",
+          "description": "How the greys are mixed."
+        }
+      }
+    },
+    "refresh": {
+      "name": "Refresh forecast",
+      "description": "Fetches the forecast and renders new frames now. They are sent at the device's next sync.",
+      "fields": {
+        "device_id": {
+          "name": "Device",
+          "description": "The TH5. All when empty."
+        },
+        "config_entry_id": {
+          "name": "Config entry",
+          "description": "The TH5 Display entry, instead of the device."
+        }
+      }
+    },
+    "install_firmware": {
+      "name": "Install firmware",
+      "description": "Queues an MCU firmware package (.fwu) from the configuration directory, for test images. The device installs it at its next sync.",
+      "fields": {
+        "device_id": {
+          "name": "Device",
+          "description": "The TH5. Optional when only one is set up."
+        },
+        "config_entry_id": {
+          "name": "Config entry",
+          "description": "The TH5 Display entry, instead of the device."
+        },
+        "path": {
+          "name": "Path",
+          "description": "The .fwu file, relative to the configuration directory (or absolute inside it)."
+        }
+      }
+    }
+  }
+}
